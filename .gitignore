@@ -1,0 +1,97 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+
+# Configuración local y variables
+.env
+.env.*
+!.env.example
+.vscode/
+pubspec_overrides.yaml
+
+# Credenciales de firma Android
+/android/key.properties
+/android/*.jks
+/android/*.keystore
+/android/app/*.jks
+/android/app/*.keystore
+*.jks
+*.keystore
+
+# Certificados y claves
+*.pem
+*.p12
+*.pfx
+
+# Configuración local de Flutter/Android
+/android/local.properties
+/android/.gradle/
+**/flutter_export_environment.sh
+**/Generated.xcconfig
+**/ephemeral/
+
+# Cachés adicionales
+__pycache__/
+*.pyc
+*.pyo
+
+# Bases de datos y archivos locales
+*.db
+*.sqlite
+*.sqlite3
+/0
+/archivos_producto.txt
+
+# Copias de seguridad
+*.bak
+*.bak_*
+*.backup
+*~
+
+# Depuración y herramientas temporales
+/SIGPRED_DEBUG_HISTORIAL_SUPERVISOR.txt
+/SIGMA_OBJ5_AVANCE_*/
+/docs/sql.txt
