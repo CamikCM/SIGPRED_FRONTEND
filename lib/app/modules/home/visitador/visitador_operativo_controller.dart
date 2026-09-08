@@ -278,6 +278,12 @@ class VisitadorOperativoController extends GetxController {
     try {
       isSubmitting.value = true;
       final position = await _tryGetPosition();
+      await _recordTrackingEvent(
+        'jornada_tracking_fin',
+        position: position,
+        waitForCompletion: true,
+        preferForeground: true,
+      );
       final response = await _provider.cerrarJornada(
         lat: position?.latitude,
         lng: position?.longitude,
@@ -348,6 +354,8 @@ class VisitadorOperativoController extends GetxController {
     }
 
     Map<String, dynamic>? pendingPayload;
+    Position? trackingEndPosition;
+    String? trackingEndSource;
 
     try {
       isSubmitting.value = true;
@@ -380,6 +388,8 @@ class VisitadorOperativoController extends GetxController {
       final esRevisita = activeDraft?.esRevisita == true;
       final visitaObjetivoId = activeDraft?.visitaId;
       final visitaObjetivoLocalUuid = activeDraft?.visitaLocalUuid;
+      trackingEndPosition = posicionFin;
+      trackingEndSource = esRevisita ? 'revisit_checkout' : 'visit_checkout';
 
       final payload = <String, dynamic>{
         if (esRevisita)
@@ -481,6 +491,10 @@ class VisitadorOperativoController extends GetxController {
             visitaLocalUuid: visitaObjetivoLocalUuid,
           );
           await _localDb.saveJson(_cacheKey('jornada'), jornadaHoy.value);
+          await _recordTrackingEvent(
+            trackingEndSource,
+            position: trackingEndPosition,
+          );
           await limpiarVisitaActiva();
           unawaited(sync.syncPending());
           SafeUi.snackbar(
@@ -497,6 +511,10 @@ class VisitadorOperativoController extends GetxController {
         await _provider.registrarVisita(payload);
       }
 
+      await _recordTrackingEvent(
+        trackingEndSource,
+        position: trackingEndPosition,
+      );
       await limpiarVisitaActiva();
       await refreshAll();
       SafeUi.snackbar(
@@ -526,6 +544,12 @@ class VisitadorOperativoController extends GetxController {
             visitaId: visitaObjetivoId,
           );
           await _localDb.saveJson(_cacheKey('jornada'), jornadaHoy.value);
+          if (trackingEndSource != null) {
+            await _recordTrackingEvent(
+              trackingEndSource,
+              position: trackingEndPosition,
+            );
+          }
           await limpiarVisitaActiva();
           SafeUi.snackbar(
             'Revisita guardada offline',
@@ -538,6 +562,12 @@ class VisitadorOperativoController extends GetxController {
           await sync.enqueueVisita(pendingPayload);
           _addLocalVisit(detalleRuta, pendingPayload);
           await _localDb.saveJson(_cacheKey('jornada'), jornadaHoy.value);
+          if (trackingEndSource != null) {
+            await _recordTrackingEvent(
+              trackingEndSource,
+              position: trackingEndPosition,
+            );
+          }
           await limpiarVisitaActiva();
           SafeUi.snackbar(
             'Visita guardada offline',
@@ -1051,6 +1081,10 @@ class VisitadorOperativoController extends GetxController {
 
     visitaActiva.value = draft;
     await _saveActiveVisitDraft();
+    await _recordTrackingEvent(
+      revisita ? 'revisit_checkin' : 'visit_checkin',
+      position: position,
+    );
     return draft;
   }
 
@@ -1355,6 +1389,39 @@ class VisitadorOperativoController extends GetxController {
       gpsStatusText.value = 'Error de GPS';
       SafeUi.snackbar('No se pudo obtener GPS', _cleanError(error));
       return null;
+    }
+  }
+
+  Future<void> _recordTrackingEvent(
+    String source, {
+    Position? position,
+    bool waitForCompletion = false,
+    bool preferForeground = false,
+  }) async {
+    if (!jornadaActiva) return;
+
+    Future<void> capture() async {
+      try {
+        final captured = await BackgroundLocationService.captureEvent(
+          source: source,
+          position: position,
+          preferForeground: preferForeground,
+        );
+        if (!captured) {
+          debugPrint('⚠️ No se pudo registrar punto GPS obligatorio: $source');
+        }
+      } catch (error) {
+        // El tracking nunca debe bloquear la operación comercial.
+        debugPrint(
+          '⚠️ Error registrando punto GPS obligatorio $source: $error',
+        );
+      }
+    }
+
+    if (waitForCompletion) {
+      await capture();
+    } else {
+      unawaited(capture());
     }
   }
 

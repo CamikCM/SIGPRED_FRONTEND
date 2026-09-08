@@ -30,6 +30,10 @@ class BackgroundLocationService {
   static const String notificationChannelId = 'sigpred_tracking';
   static const int notificationId = 918;
   static const Duration trackingInterval = Duration(seconds: 15);
+  static const double minimumDistanceMeters = 30;
+  static const Duration heartbeatInterval = Duration(seconds: 60);
+  static const double preferredAccuracyMeters = 50;
+  static const Duration poorAccuracyFallbackInterval = Duration(minutes: 5);
 
   static const String _activeKey = 'sigpred_tracking_active';
   static const String _jornadaKey = 'sigpred_tracking_jornada_id';
@@ -48,6 +52,9 @@ class BackgroundLocationService {
   static StreamSubscription<Position>? _iosPositionSubscription;
   static int _iosPointCount = 0;
   static bool _iosCaptureInProgress = false;
+  static double? _iosLastAcceptedLatitude;
+  static double? _iosLastAcceptedLongitude;
+  static DateTime? _iosLastAcceptedAt;
 
   static bool get isAndroid =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
@@ -60,11 +67,11 @@ class BackgroundLocationService {
   static String get trackingModeDescription {
     if (isIos) {
       return 'GPS en segundo plano activo en iPhone · '
-          'actualizaciones administradas por iOS';
+          'guarda cada 30 m o 60 s';
     }
 
-    return 'GPS en segundo plano activo cada '
-        '${trackingInterval.inSeconds}s';
+    return 'GPS activo · consulta cada ${trackingInterval.inSeconds}s · '
+        'guarda cada 30 m o 60 s';
   }
 
   static Stream<Map<String, dynamic>> get locationUpdates {
@@ -95,6 +102,210 @@ class BackgroundLocationService {
     }
 
     return Stream<Map<String, dynamic>>.empty();
+  }
+
+  static double? _toDouble(dynamic value) {
+    if (value == null) return null;
+    if (value is double) return value;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString());
+  }
+
+  static bool _toBool(dynamic value) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    final text = value?.toString().trim().toLowerCase();
+    return text == 'true' || text == '1' || text == 'yes';
+  }
+
+  static bool _shouldStorePoint({
+    required double latitude,
+    required double longitude,
+    required double accuracy,
+    required DateTime capturedAt,
+    required bool force,
+    required double? lastLatitude,
+    required double? lastLongitude,
+    required DateTime? lastCapturedAt,
+  }) {
+    if (force) return true;
+
+    if (lastLatitude == null ||
+        lastLongitude == null ||
+        lastCapturedAt == null) {
+      return true;
+    }
+
+    var elapsed = capturedAt.difference(lastCapturedAt);
+    if (elapsed.isNegative) elapsed = Duration.zero;
+
+    final hasPreferredAccuracy = accuracy <= preferredAccuracyMeters;
+    if (!hasPreferredAccuracy && elapsed < poorAccuracyFallbackInterval) {
+      return false;
+    }
+
+    final distance = Geolocator.distanceBetween(
+      lastLatitude,
+      lastLongitude,
+      latitude,
+      longitude,
+    );
+
+    return distance >= minimumDistanceMeters || elapsed >= heartbeatInterval;
+  }
+
+  static Future<Position?> _currentEventPosition() async {
+    try {
+      final settings = LocationSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+      );
+      return await Geolocator.getCurrentPosition(
+        locationSettings: settings,
+      ).timeout(const Duration(seconds: 20));
+    } catch (error) {
+      debugPrint('⚠️ No se pudo capturar punto GPS de evento: $error');
+      return null;
+    }
+  }
+
+  static Future<bool> _captureForegroundEvent({
+    required Position position,
+    required String source,
+  }) async {
+    final jornadaText = await _storage.read(key: _jornadaKey);
+    final rutaText = await _storage.read(key: _rutaKey);
+    final token = await _storage.read(key: 'token');
+    final jornadaId = int.tryParse(jornadaText ?? '');
+    final rutaId = int.tryParse(rutaText ?? '');
+
+    final payload = <String, dynamic>{
+      if (jornadaId != null) 'jornada_id': jornadaId,
+      if (rutaId != null) 'ruta_id': rutaId,
+      'latitude': position.latitude,
+      'longitude': position.longitude,
+      'accuracy': position.accuracy,
+      'speed': position.speed,
+      'heading': position.heading,
+      'is_mocked': position.isMocked,
+      'source': source,
+      'captured_at': DateTime.now().toIso8601String(),
+    };
+
+    var queuedOffline = false;
+
+    if (token == null || token.isEmpty) {
+      queuedOffline = true;
+    } else {
+      try {
+        final response = await http
+            .post(
+              Env.uri('/tracking/locations'),
+              headers: {
+                'Authorization': 'Bearer $token',
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode(payload),
+            )
+            .timeout(const Duration(seconds: 10));
+
+        if (response.statusCode == 401 || response.statusCode == 403) {
+          return false;
+        }
+
+        if (response.statusCode >= 400 && response.statusCode < 500) {
+          debugPrint(
+            '⚠️ Punto GPS de evento rechazado · '
+            'HTTP ${response.statusCode}: ${response.body}',
+          );
+          return false;
+        }
+
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          throw Exception('HTTP ${response.statusCode}: ${response.body}');
+        }
+      } catch (error) {
+        queuedOffline = true;
+      }
+    }
+
+    if (queuedOffline) {
+      await LocalDatabase.instance.insertOfflineRecord(
+        kind: 'tracking',
+        method: 'POST',
+        endpoint: '/tracking/locations',
+        payload: payload,
+      );
+    }
+
+    debugPrint(
+      '📌 GPS evento $source · '
+      '${queuedOffline ? 'guardado offline' : 'enviado'} · '
+      '${position.latitude.toStringAsFixed(6)}, '
+      '${position.longitude.toStringAsFixed(6)}',
+    );
+    return true;
+  }
+
+  static Future<bool> captureEvent({
+    required String source,
+    Position? position,
+    bool preferForeground = false,
+  }) async {
+    if (!isSupported) return false;
+
+    final eventPosition = position ?? await _currentEventPosition();
+    if (eventPosition == null) return false;
+
+    if (preferForeground) {
+      return _captureForegroundEvent(position: eventPosition, source: source);
+    }
+
+    final active = await _storage.read(key: _activeKey);
+
+    if (isIos && active == 'true' && _iosPositionSubscription != null) {
+      return _captureIosPosition(eventPosition, source: source, force: true);
+    }
+
+    if (isAndroid && active == 'true' && await _service.isRunning()) {
+      final requestId = DateTime.now().microsecondsSinceEpoch.toString();
+      final completer = Completer<bool>();
+      late final StreamSubscription<Map<String, dynamic>?> subscription;
+
+      subscription = _service.on('captureCompleted').listen((event) {
+        if (event == null || event['request_id']?.toString() != requestId) {
+          return;
+        }
+        if (!completer.isCompleted) {
+          completer.complete(_toBool(event['captured']));
+        }
+      });
+
+      _service.invoke('captureNow', {
+        'request_id': requestId,
+        'source': source,
+        'latitude': eventPosition.latitude,
+        'longitude': eventPosition.longitude,
+        'accuracy': eventPosition.accuracy,
+        'speed': eventPosition.speed,
+        'heading': eventPosition.heading,
+        'is_mocked': eventPosition.isMocked,
+        'captured_at': DateTime.now().toIso8601String(),
+      });
+
+      try {
+        return await completer.future.timeout(
+          const Duration(seconds: 15),
+          onTimeout: () => false,
+        );
+      } finally {
+        await subscription.cancel();
+      }
+    }
+
+    // Fallback para eventos obligatorios cuando la jornada está pausada o
+    // el servicio en segundo plano todavía no está disponible.
+    return _captureForegroundEvent(position: eventPosition, source: source);
   }
 
   static Future<void> initializeService() async {
@@ -344,6 +555,9 @@ class BackgroundLocationService {
 
     _iosPointCount = 0;
     _iosCaptureInProgress = false;
+    _iosLastAcceptedLatitude = null;
+    _iosLastAcceptedLongitude = null;
+    _iosLastAcceptedAt = null;
 
     final settings = AppleSettings(
       accuracy: LocationAccuracy.bestForNavigation,
@@ -353,6 +567,19 @@ class BackgroundLocationService {
       showBackgroundLocationIndicator: true,
       allowBackgroundLocationUpdates: true,
     );
+
+    try {
+      final initialPosition = await Geolocator.getCurrentPosition(
+        locationSettings: settings,
+      ).timeout(const Duration(seconds: 20));
+      await _captureIosPosition(
+        initialPosition,
+        source: 'jornada_tracking_inicio',
+        force: true,
+      );
+    } catch (error) {
+      debugPrint('⚠️ No se pudo obtener el primer punto iOS: $error');
+    }
 
     _iosPositionSubscription =
         Geolocator.getPositionStream(locationSettings: settings).listen(
@@ -373,11 +600,19 @@ class BackgroundLocationService {
     _emitIosStatus('started', 'GPS de jornada activo en iPhone.');
   }
 
-  static Future<void> _captureIosPosition(
+  static Future<bool> _captureIosPosition(
     Position position, {
     required String source,
+    bool force = false,
   }) async {
-    if (_iosCaptureInProgress) return;
+    if (_iosCaptureInProgress) {
+      if (!force) return false;
+      final deadline = DateTime.now().add(const Duration(seconds: 12));
+      while (_iosCaptureInProgress && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      if (_iosCaptureInProgress) return false;
+    }
 
     _iosCaptureInProgress = true;
 
@@ -387,7 +622,7 @@ class BackgroundLocationService {
       if (active != 'true') {
         await _iosPositionSubscription?.cancel();
         _iosPositionSubscription = null;
-        return;
+        return false;
       }
 
       final permission = await Geolocator.checkPermission();
@@ -398,7 +633,7 @@ class BackgroundLocationService {
           'SIGPRED necesita permiso “Siempre” para '
               'continuar el seguimiento en iPhone.',
         );
-        return;
+        return false;
       }
 
       if (!await Geolocator.isLocationServiceEnabled()) {
@@ -406,7 +641,24 @@ class BackgroundLocationService {
           'gps_disabled',
           'La ubicación del iPhone está desactivada.',
         );
-        return;
+        return false;
+      }
+
+      final capturedAt = DateTime.now();
+      final shouldStore = _shouldStorePoint(
+        latitude: position.latitude,
+        longitude: position.longitude,
+        accuracy: position.accuracy,
+        capturedAt: capturedAt,
+        force: force,
+        lastLatitude: _iosLastAcceptedLatitude,
+        lastLongitude: _iosLastAcceptedLongitude,
+        lastCapturedAt: _iosLastAcceptedAt,
+      );
+
+      if (!shouldStore) {
+        debugPrint('↪️ iOS GPS omitido · sin 30 m / 60 s o precisión > 50 m');
+        return false;
       }
 
       final jornadaText = await _storage.read(key: _jornadaKey);
@@ -429,7 +681,7 @@ class BackgroundLocationService {
         'heading': position.heading,
         'is_mocked': position.isMocked,
         'source': source,
-        'captured_at': DateTime.now().toIso8601String(),
+        'captured_at': capturedAt.toIso8601String(),
       };
 
       var queuedOffline = false;
@@ -463,7 +715,7 @@ class BackgroundLocationService {
 
             await _iosPositionSubscription?.cancel();
             _iosPositionSubscription = null;
-            return;
+            return false;
           }
 
           if (response.statusCode >= 400 && response.statusCode < 500) {
@@ -472,7 +724,7 @@ class BackgroundLocationService {
               'El servidor rechazó el punto GPS '
                   '(HTTP ${response.statusCode}).',
             );
-            return;
+            return false;
           }
 
           if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -495,6 +747,10 @@ class BackgroundLocationService {
           payload: payload,
         );
       }
+
+      _iosLastAcceptedLatitude = position.latitude;
+      _iosLastAcceptedLongitude = position.longitude;
+      _iosLastAcceptedAt = capturedAt;
 
       _iosPointCount += 1;
 
@@ -519,6 +775,7 @@ class BackgroundLocationService {
             '${_iosPointCount == 1 ? 'punto' : 'puntos'} · '
             'último $stateText',
       );
+      return true;
     } catch (error, stackTrace) {
       debugPrint('❌ Error de tracking GPS iOS: $error');
 
@@ -529,6 +786,7 @@ class BackgroundLocationService {
         'Error temporal de GPS. '
             'SIGPRED continuará intentando.',
       );
+      return false;
     } finally {
       _iosCaptureInProgress = false;
     }
@@ -561,6 +819,9 @@ void onStart(ServiceInstance service) async {
   Timer? timer;
   var pointCount = 0;
   var captureInProgress = false;
+  double? lastAcceptedLatitude;
+  double? lastAcceptedLongitude;
+  DateTime? lastAcceptedAt;
 
   Future<void> updateNotification(String content) async {
     if (service is! AndroidServiceInstance) return;
@@ -623,8 +884,19 @@ void onStart(ServiceInstance service) async {
     });
   }
 
-  Future<void> captureLocation({required String source}) async {
-    if (captureInProgress) return;
+  Future<bool> captureLocation({
+    required String source,
+    bool force = false,
+    Map<String, dynamic>? provided,
+  }) async {
+    if (captureInProgress) {
+      if (!force) return false;
+      final deadline = DateTime.now().add(const Duration(seconds: 12));
+      while (captureInProgress && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      if (captureInProgress) return false;
+    }
     captureInProgress = true;
 
     try {
@@ -638,7 +910,7 @@ void onStart(ServiceInstance service) async {
         timer?.cancel();
         await updateNotification('Jornada finalizada. Deteniendo GPS...');
         service.stopSelf();
-        return;
+        return false;
       }
 
       final permission = await Geolocator.checkPermission();
@@ -649,7 +921,7 @@ void onStart(ServiceInstance service) async {
           'permission_error',
           'Permiso de ubicación no disponible.',
         );
-        return;
+        return false;
       }
 
       if (!await Geolocator.isLocationServiceEnabled()) {
@@ -658,12 +930,69 @@ void onStart(ServiceInstance service) async {
           'gps_disabled',
           'El GPS del teléfono está desactivado.',
         );
-        return;
+        return false;
       }
 
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.bestForNavigation,
-      ).timeout(const Duration(seconds: 20));
+      final providedLatitude = BackgroundLocationService._toDouble(
+        provided?['latitude'],
+      );
+      final providedLongitude = BackgroundLocationService._toDouble(
+        provided?['longitude'],
+      );
+
+      late final double latitude;
+      late final double longitude;
+      late final double accuracy;
+      late final double speed;
+      late final double heading;
+      late final bool isMocked;
+      late final DateTime capturedAt;
+
+      if (providedLatitude != null && providedLongitude != null) {
+        latitude = providedLatitude;
+        longitude = providedLongitude;
+        accuracy =
+            BackgroundLocationService._toDouble(provided?['accuracy']) ?? 0;
+        speed = BackgroundLocationService._toDouble(provided?['speed']) ?? 0;
+        heading =
+            BackgroundLocationService._toDouble(provided?['heading']) ?? 0;
+        isMocked = BackgroundLocationService._toBool(provided?['is_mocked']);
+        capturedAt =
+            DateTime.tryParse(provided?['captured_at']?.toString() ?? '') ??
+            DateTime.now();
+      } else {
+        final position = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.bestForNavigation,
+          ),
+        ).timeout(const Duration(seconds: 20));
+        latitude = position.latitude;
+        longitude = position.longitude;
+        accuracy = position.accuracy;
+        speed = position.speed;
+        heading = position.heading;
+        isMocked = position.isMocked;
+        capturedAt = DateTime.now();
+      }
+
+      final shouldStore = BackgroundLocationService._shouldStorePoint(
+        latitude: latitude,
+        longitude: longitude,
+        accuracy: accuracy,
+        capturedAt: capturedAt,
+        force: force,
+        lastLatitude: lastAcceptedLatitude,
+        lastLongitude: lastAcceptedLongitude,
+        lastCapturedAt: lastAcceptedAt,
+      );
+
+      if (!shouldStore) {
+        debugPrint(
+          '↪️ GPS omitido · sin 30 m / 60 s o precisión > 50 m · '
+          'source=$source',
+        );
+        return false;
+      }
 
       final jornadaText = await storage.read(
         key: 'sigpred_tracking_jornada_id',
@@ -676,14 +1005,14 @@ void onStart(ServiceInstance service) async {
       final payload = <String, dynamic>{
         if (jornadaId != null) 'jornada_id': jornadaId,
         if (rutaId != null) 'ruta_id': rutaId,
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-        'accuracy': position.accuracy,
-        'speed': position.speed,
-        'heading': position.heading,
-        'is_mocked': position.isMocked,
+        'latitude': latitude,
+        'longitude': longitude,
+        'accuracy': accuracy,
+        'speed': speed,
+        'heading': heading,
+        'is_mocked': isMocked,
         'source': source,
-        'captured_at': DateTime.now().toIso8601String(),
+        'captured_at': capturedAt.toIso8601String(),
       };
 
       var queuedOffline = false;
@@ -717,7 +1046,7 @@ void onStart(ServiceInstance service) async {
             );
             timer?.cancel();
             service.stopSelf();
-            return;
+            return false;
           }
 
           if (response.statusCode >= 400 && response.statusCode < 500) {
@@ -728,7 +1057,7 @@ void onStart(ServiceInstance service) async {
               'validation_error',
               'HTTP ${response.statusCode}: ${response.body}',
             );
-            return;
+            return false;
           }
 
           if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -749,13 +1078,17 @@ void onStart(ServiceInstance service) async {
         );
       }
 
+      lastAcceptedLatitude = latitude;
+      lastAcceptedLongitude = longitude;
+      lastAcceptedAt = capturedAt;
+
       pointCount += 1;
       final stateText = queuedOffline ? 'guardado offline' : 'enviado';
 
       debugPrint(
         '📍 GPS #$pointCount $stateText · source=$source · '
-        '${position.latitude.toStringAsFixed(6)}, '
-        '${position.longitude.toStringAsFixed(6)}',
+        '${latitude.toStringAsFixed(6)}, '
+        '${longitude.toStringAsFixed(6)}',
       );
 
       await updateNotification(
@@ -769,11 +1102,13 @@ void onStart(ServiceInstance service) async {
         'point_count': pointCount,
         if (networkError != null) 'network_error': networkError,
       });
+      return true;
     } catch (error, stackTrace) {
       debugPrint('❌ Error capturando/enviando GPS: $error');
       debugPrintStack(stackTrace: stackTrace);
       await updateNotification('GPS activo · error temporal · reintentando');
       await emitStatus('temporary_error', error.toString());
+      return false;
     } finally {
       captureInProgress = false;
     }
@@ -789,6 +1124,23 @@ void onStart(ServiceInstance service) async {
     await captureLocation(source: 'jornada_tracking_reanudado');
   });
 
+  service.on('captureNow').listen((event) async {
+    final data = event == null
+        ? <String, dynamic>{}
+        : Map<String, dynamic>.from(event);
+    final requestId = data['request_id']?.toString() ?? '';
+    final source = data['source']?.toString().trim();
+    final captured = await captureLocation(
+      source: source == null || source.isEmpty ? 'tracking_event' : source,
+      force: true,
+      provided: data,
+    );
+    service.invoke('captureCompleted', {
+      'request_id': requestId,
+      'captured': captured,
+    });
+  });
+
   final active = await storage.read(key: 'sigpred_tracking_active');
   if (active != 'true') {
     service.stopSelf();
@@ -796,7 +1148,7 @@ void onStart(ServiceInstance service) async {
   }
 
   await updateNotification('GPS activo · esperando primer punto...');
-  await captureLocation(source: 'jornada_tracking_inicio');
+  await captureLocation(source: 'jornada_tracking_inicio', force: true);
 
   timer = Timer.periodic(BackgroundLocationService.trackingInterval, (_) async {
     await captureLocation(source: 'jornada_tracking_background');
