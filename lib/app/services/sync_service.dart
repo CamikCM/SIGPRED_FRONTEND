@@ -57,6 +57,33 @@ class SyncService extends GetxService {
     );
   }
 
+  Future<bool> replacePendingVisita({
+    required String localUuid,
+    required Map<String, dynamic> payload,
+  }) async {
+    final replaced = await _localDb.replacePendingVisitaPayload(
+      localUuid: localUuid,
+      payload: payload,
+    );
+    await refreshPendingCount();
+    if (replaced) {
+      lastSyncMessage.value = 'Visita offline actualizada';
+    }
+    return replaced;
+  }
+
+  Future<void> enqueueVisitaUpdate({
+    required int visitaId,
+    required Map<String, dynamic> payload,
+  }) async {
+    await enqueue(
+      kind: 'visita_update',
+      method: 'PUT',
+      endpoint: '/visitas/$visitaId',
+      payload: payload,
+    );
+  }
+
   Future<void> enqueueJornadaInicio(Map<String, dynamic> payload) async {
     await enqueue(
       kind: 'jornada_inicio',
@@ -192,11 +219,7 @@ class SyncService extends GetxService {
     };
 
     final response = await http
-        .post(
-          uri,
-          headers: headers,
-          body: jsonEncode({'items': items}),
-        )
+        .post(uri, headers: headers, body: jsonEncode({'items': items}))
         .timeout(const Duration(seconds: 15));
 
     _ensureSuccess(
@@ -206,10 +229,7 @@ class SyncService extends GetxService {
     );
   }
 
-  Future<void> _sendRecord(
-    Map<String, dynamic> record,
-    String token,
-  ) async {
+  Future<void> _sendRecord(Map<String, dynamic> record, String token) async {
     final method = (record['method'] ?? 'POST').toString().toUpperCase();
     final endpoint = (record['endpoint'] ?? '').toString();
     final payload = _decodePayload(record);
@@ -258,11 +278,7 @@ class SyncService extends GetxService {
         throw Exception('Método HTTP no soportado: $method');
     }
 
-    _ensureSuccess(
-      response,
-      method: method,
-      endpoint: endpoint,
-    );
+    _ensureSuccess(response, method: method, endpoint: endpoint);
   }
 
   Map<String, dynamic> _decodePayload(Map<String, dynamic> record) {

@@ -127,6 +127,9 @@ class _MapaRutaVisitadorViewState extends State<MapaRutaVisitadorView> {
           name: controller.clienteNombre(detail),
           address: controller.clienteDireccion(detail),
           visited: controller.detalleVisitado(detail),
+          revisitable: controller.detalleRevisitable(detail),
+          effective: controller.detalleVisitaEfectiva(detail),
+          motivo: controller.detalleMotivoVisita(detail),
           recommended:
               controller.siguienteVisitaSugerida != null &&
               controller.esMismoDetalle(
@@ -592,7 +595,7 @@ class _MapaRutaVisitadorViewState extends State<MapaRutaVisitadorView> {
                           : Icons.place_outlined,
                       label: 'Estado',
                       value: point.visited
-                          ? 'Realizada'
+                          ? (point.effective ? 'Efectiva' : 'No efectiva')
                           : point.recommended
                           ? 'Recomendada'
                           : point.selected
@@ -604,13 +607,68 @@ class _MapaRutaVisitadorViewState extends State<MapaRutaVisitadorView> {
               ),
               const SizedBox(height: 14),
 
-              if (point.visited)
-                const _Notice(
+              if (point.visited && !point.revisitable)
+                _Notice(
                   icon: Icons.check_circle_rounded,
-                  text: 'Esta visita ya fue registrada.',
+                  text: point.effective
+                      ? 'Esta visita ya fue registrada como efectiva.'
+                      : 'Esta visita ya fue registrada.',
                   color: SigmaColors.success,
                 )
-              else if (!controller.jornadaActiva)
+              else if (point.revisitable && !controller.jornadaActiva)
+                _Notice(
+                  icon: Icons.refresh_rounded,
+                  text:
+                      'Visita no efectiva${point.motivo.isNotEmpty ? ' · ${point.motivo}' : ''}. '
+                      'Inicia tu jornada para volver a visitarla.',
+                  color: SigmaColors.warning,
+                )
+              else if (point.revisitable && paused)
+                _Notice(
+                  icon: Icons.pause_circle_outline_rounded,
+                  text:
+                      'Visita no efectiva${point.motivo.isNotEmpty ? ' · ${point.motivo}' : ''}. '
+                      'Reanuda tu jornada para volver a visitarla.',
+                  color: SigmaColors.warning,
+                )
+              else if (point.revisitable) ...[
+                _Notice(
+                  icon: Icons.refresh_rounded,
+                  text:
+                      'Último resultado: ${point.motivo.isEmpty ? 'No efectiva' : point.motivo}.',
+                  color: SigmaColors.warning,
+                ),
+                const SizedBox(height: 8),
+                if (near)
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: SigmaColors.warning,
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        final draft = await controller.iniciarORecuperarVisita(
+                          point.detail,
+                          revisita: true,
+                        );
+                        if (draft != null) {
+                          widget.onOpenHome?.call();
+                        }
+                      },
+                      icon: const Icon(Icons.refresh_rounded),
+                      label: const Text('Volver a visitar'),
+                    ),
+                  )
+                else
+                  const _Notice(
+                    icon: Icons.location_searching_rounded,
+                    text:
+                        'Acércate a 100 m o menos del punto para volver a visitarlo.',
+                    color: SigmaColors.warning,
+                  ),
+              ] else if (!controller.jornadaActiva)
                 const _Notice(
                   icon: Icons.play_circle_outline_rounded,
                   text: 'Primero inicia tu jornada desde Inicio.',
@@ -1306,7 +1364,9 @@ class _PointBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = point.visited
+    final color = point.visited && !point.effective
+        ? SigmaColors.warning
+        : point.visited
         ? SigmaColors.success
         : point.selected
         ? SigmaColors.secondary
@@ -1321,7 +1381,11 @@ class _PointBadge extends StatelessWidget {
         shape: BoxShape.circle,
       ),
       child: Icon(
-        point.visited
+        point.revisitable
+            ? Icons.refresh_rounded
+            : point.visited && !point.effective
+            ? Icons.remove_shopping_cart_outlined
+            : point.visited
             ? Icons.check_rounded
             : point.selected
             ? Icons.navigation_rounded
@@ -1341,14 +1405,20 @@ class _MapMarker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final fill = point.visited
+    final fill = point.visited && !point.effective
+        ? SigmaColors.warning
+        : point.visited
         ? SigmaColors.success
         : point.selected
         ? SigmaColors.secondary
         : point.recommended
         ? SigmaColors.primary
         : Colors.white;
-    final foreground = point.visited || point.selected || point.recommended
+    final foreground =
+        point.revisitable ||
+            point.visited ||
+            point.selected ||
+            point.recommended
         ? Colors.white
         : SigmaColors.primary;
 
@@ -1360,7 +1430,11 @@ class _MapMarker extends StatelessWidget {
         color: fill,
         shape: BoxShape.circle,
         border: Border.all(
-          color: point.visited || point.selected || point.recommended
+          color:
+              point.revisitable ||
+                  point.visited ||
+                  point.selected ||
+                  point.recommended
               ? Colors.white
               : SigmaColors.primary,
           width: 3,
@@ -1370,7 +1444,11 @@ class _MapMarker extends StatelessWidget {
         ],
       ),
       child: Icon(
-        point.visited
+        point.revisitable
+            ? Icons.refresh_rounded
+            : point.visited && !point.effective
+            ? Icons.remove_shopping_cart_outlined
+            : point.visited
             ? Icons.check_rounded
             : point.selected
             ? Icons.navigation_rounded
@@ -1390,7 +1468,11 @@ class _MarkerLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final text = point.visited
+    final text = point.revisitable
+        ? 'VOLVER'
+        : point.visited && !point.effective
+        ? 'NO EFECT.'
+        : point.visited
         ? 'HECHA'
         : point.selected
         ? 'DESTINO'
@@ -1412,7 +1494,9 @@ class _MarkerLabel extends StatelessWidget {
         style: TextStyle(
           fontSize: 9,
           fontWeight: FontWeight.w900,
-          color: point.visited
+          color: point.visited && !point.effective
+              ? SigmaColors.warning
+              : point.visited
               ? SigmaColors.success
               : point.selected
               ? SigmaColors.secondary
@@ -1560,6 +1644,9 @@ class _MapPoint {
     required this.name,
     required this.address,
     required this.visited,
+    required this.revisitable,
+    required this.effective,
+    required this.motivo,
     required this.recommended,
     required this.selected,
   });
@@ -1570,6 +1657,9 @@ class _MapPoint {
   final String name;
   final String address;
   final bool visited;
+  final bool revisitable;
+  final bool effective;
+  final String motivo;
   final bool recommended;
   final bool selected;
 }

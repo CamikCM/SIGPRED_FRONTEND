@@ -377,9 +377,15 @@ class VisitadorOperativoController extends GetxController {
           .map((item) => item.toPayload())
           .toList();
       final efectivaFinal = pedidoDetalles.isNotEmpty;
+      final esRevisita = activeDraft?.esRevisita == true;
+      final visitaObjetivoId = activeDraft?.visitaId;
+      final visitaObjetivoLocalUuid = activeDraft?.visitaLocalUuid;
 
       final payload = <String, dynamic>{
-        'local_uuid': activeDraft?.localUuid ?? _uuid.v4(),
+        if (esRevisita)
+          'revision_uuid': activeDraft?.localUuid ?? _uuid.v4()
+        else
+          'local_uuid': activeDraft?.localUuid ?? _uuid.v4(),
         if (jornadaId != null) 'jor_id': jornadaId,
         if (_toInt(detalleRuta['ruta_det_id']) != null)
           'ruta_det_id': _toInt(detalleRuta['ruta_det_id']),
@@ -420,27 +426,130 @@ class VisitadorOperativoController extends GetxController {
       };
 
       pendingPayload = payload;
-      await _provider.registrarVisita(payload);
+
+      if (esRevisita) {
+        if (visitaObjetivoId != null) {
+          await _provider.actualizarVisita(visitaObjetivoId, payload);
+        } else if (visitaObjetivoLocalUuid != null &&
+            visitaObjetivoLocalUuid.isNotEmpty) {
+          final sync = _sync;
+          if (sync == null) {
+            throw Exception(
+              'No se pudo acceder a la cola offline de la visita original.',
+            );
+          }
+
+          final visitaAnteriorLocal = visitaRegistradaParaDetalle(detalleRuta);
+          final replacementPayload = Map<String, dynamic>.from(payload)
+            ..remove('revision_uuid')
+            ..['local_uuid'] = visitaObjetivoLocalUuid;
+
+          if (visitaAnteriorLocal != null && activeDraft != null) {
+            replacementPayload['revisita_previa'] = {
+              'revision_uuid': activeDraft.localUuid,
+              'efectiva': visitaAnteriorLocal['efectiva'],
+              'resultado': visitaAnteriorLocal['resultado'],
+              'motivo': visitaAnteriorLocal['motivo'],
+              'fecha_inicio': visitaAnteriorLocal['fecha_inicio'],
+              'fecha_fin': visitaAnteriorLocal['fecha_fin'],
+              'lat':
+                  visitaAnteriorLocal['vis_lat'] ??
+                  visitaAnteriorLocal['fin_lat'] ??
+                  visitaAnteriorLocal['inicio_lat'],
+              'lng':
+                  visitaAnteriorLocal['vis_lng'] ??
+                  visitaAnteriorLocal['fin_lng'] ??
+                  visitaAnteriorLocal['inicio_lng'],
+            };
+          }
+
+          final replaced = await sync.replacePendingVisita(
+            localUuid: visitaObjetivoLocalUuid,
+            payload: replacementPayload,
+          );
+
+          if (!replaced) {
+            throw Exception(
+              'La visita original todavía no tiene identificador del servidor. '
+              'Sincroniza los pendientes e inténtalo nuevamente.',
+            );
+          }
+
+          _updateLocalVisit(
+            detalleRuta,
+            replacementPayload,
+            visitaLocalUuid: visitaObjetivoLocalUuid,
+          );
+          await _localDb.saveJson(_cacheKey('jornada'), jornadaHoy.value);
+          await limpiarVisitaActiva();
+          unawaited(sync.syncPending());
+          SafeUi.snackbar(
+            'Revisita actualizada',
+            'Se actualizó la misma visita pendiente de sincronización.',
+          );
+          return true;
+        } else {
+          throw Exception(
+            'No se encontró la visita original que se desea actualizar.',
+          );
+        }
+      } else {
+        await _provider.registrarVisita(payload);
+      }
+
       await limpiarVisitaActiva();
       await refreshAll();
-      SafeUi.snackbar('Visita registrada', 'Visita registrada.');
+      SafeUi.snackbar(
+        esRevisita ? 'Revisita actualizada' : 'Visita registrada',
+        esRevisita
+            ? 'La misma visita fue actualizada correctamente.'
+            : 'Visita registrada.',
+      );
       return true;
     } catch (error) {
       final sync = _sync;
+      final activeDraft = visitaActiva.value;
+      final esRevisita = activeDraft?.esRevisita == true;
+      final visitaObjetivoId = activeDraft?.visitaId;
+
       if (sync != null &&
           pendingPayload != null &&
           await _shouldQueueForOffline(error)) {
-        await sync.enqueueVisita(pendingPayload);
-        _addLocalVisit(detalleRuta, pendingPayload);
-        await _localDb.saveJson(_cacheKey('jornada'), jornadaHoy.value);
-        await limpiarVisitaActiva();
-        SafeUi.snackbar(
-          'Visita guardada offline',
-          'La visita se conservará hasta que vuelva la conexión.',
-        );
-        return true;
+        if (esRevisita && visitaObjetivoId != null) {
+          await sync.enqueueVisitaUpdate(
+            visitaId: visitaObjetivoId,
+            payload: pendingPayload,
+          );
+          _updateLocalVisit(
+            detalleRuta,
+            pendingPayload,
+            visitaId: visitaObjetivoId,
+          );
+          await _localDb.saveJson(_cacheKey('jornada'), jornadaHoy.value);
+          await limpiarVisitaActiva();
+          SafeUi.snackbar(
+            'Revisita guardada offline',
+            'La misma visita se actualizará cuando vuelva la conexión.',
+          );
+          return true;
+        }
+
+        if (!esRevisita) {
+          await sync.enqueueVisita(pendingPayload);
+          _addLocalVisit(detalleRuta, pendingPayload);
+          await _localDb.saveJson(_cacheKey('jornada'), jornadaHoy.value);
+          await limpiarVisitaActiva();
+          SafeUi.snackbar(
+            'Visita guardada offline',
+            'La visita se conservará hasta que vuelva la conexión.',
+          );
+          return true;
+        }
       }
-      SafeUi.snackbar('Error al registrar visita', _cleanError(error));
+      SafeUi.snackbar(
+        esRevisita ? 'Error al actualizar visita' : 'Error al registrar visita',
+        _cleanError(error),
+      );
       return false;
     } finally {
       isSubmitting.value = false;
@@ -705,21 +814,45 @@ class VisitadorOperativoController extends GetxController {
   int get visitasPendientes =>
       (detallesRuta.length - visitasRealizadas).clamp(0, detallesRuta.length);
 
-  bool detalleVisitado(Map<String, dynamic> detalle) {
+  bool detalleVisitado(Map<String, dynamic> detalle) =>
+      visitaRegistradaParaDetalle(detalle) != null;
+
+  Map<String, dynamic>? visitaRegistradaParaDetalle(
+    Map<String, dynamic> detalle,
+  ) {
     final detalleId = _toInt(detalle['ruta_det_id']);
     final cliente = _asMapOrNull(detalle['cliente']);
     final clienteId =
         _toInt(cliente?['cliente_id']) ?? _toInt(detalle['cliente_id']);
 
-    return visitasRegistradas.any((visita) {
+    for (final visita in visitasRegistradas.reversed) {
       final visitaDetalleId = _toInt(visita['ruta_det_id']);
       final visitaClienteId =
           _toInt(visita['cliente_id']) ??
           _toInt(_asMapOrNull(visita['cliente'])?['cliente_id']);
-      if (detalleId != null && visitaDetalleId == detalleId) return true;
-      if (clienteId != null && visitaClienteId == clienteId) return true;
-      return false;
-    });
+      if (detalleId != null && visitaDetalleId == detalleId) return visita;
+      if (clienteId != null && visitaClienteId == clienteId) return visita;
+    }
+
+    return null;
+  }
+
+  bool detalleVisitaEfectiva(Map<String, dynamic> detalle) {
+    final visita = visitaRegistradaParaDetalle(detalle);
+    return visita != null && _toBool(visita['efectiva']);
+  }
+
+  String detalleMotivoVisita(Map<String, dynamic> detalle) {
+    final visita = visitaRegistradaParaDetalle(detalle);
+    return _text(visita?['motivo'], fallback: '');
+  }
+
+  bool detalleRevisitable(Map<String, dynamic> detalle) {
+    final visita = visitaRegistradaParaDetalle(detalle);
+    if (visita == null || _toBool(visita['efectiva'])) return false;
+
+    final motivo = _text(visita['motivo'], fallback: '');
+    return motivo != 'Sin pedido / atención realizada';
   }
 
   bool esDetalleVisitaActiva(Map<String, dynamic> detalle) {
@@ -861,8 +994,9 @@ class VisitadorOperativoController extends GetxController {
   }
 
   Future<VisitaActivaDraft?> iniciarORecuperarVisita(
-    Map<String, dynamic> detalle,
-  ) async {
+    Map<String, dynamic> detalle, {
+    bool revisita = false,
+  }) async {
     final current = visitaActiva.value;
     if (current != null) {
       if (esDetalleVisitaActiva(detalle)) return current;
@@ -878,6 +1012,18 @@ class VisitadorOperativoController extends GetxController {
       return null;
     }
 
+    final visitaAnterior = revisita
+        ? visitaRegistradaParaDetalle(detalle)
+        : null;
+
+    if (revisita && !detalleRevisitable(detalle)) {
+      SafeUi.snackbar(
+        'Revisita no disponible',
+        'Esta visita no puede volver a abrirse.',
+      );
+      return null;
+    }
+
     final position = await _tryGetPosition(silent: true);
     final draft = VisitaActivaDraft(
       localUuid: _uuid.v4(),
@@ -885,6 +1031,11 @@ class VisitadorOperativoController extends GetxController {
       fechaInicio: DateTime.now(),
       inicioLat: position?.latitude,
       inicioLng: position?.longitude,
+      visitaId: revisita ? _toInt(visitaAnterior?['vis_id']) : null,
+      visitaLocalUuid: revisita
+          ? _nullableString(visitaAnterior?['local_uuid'])
+          : null,
+      esRevisita: revisita,
       tipoAtencion: 'Presencial',
       efectiva: false,
       resultado: 'Visita realizada',
@@ -1053,6 +1204,67 @@ class VisitadorOperativoController extends GetxController {
       'observaciones': payload['observaciones'],
       'offline': true,
     });
+    jornada['visitas'] = visitas;
+    jornadaHoy.value = jornada;
+  }
+
+  void _updateLocalVisit(
+    Map<String, dynamic> detalleRuta,
+    Map<String, dynamic> payload, {
+    int? visitaId,
+    String? visitaLocalUuid,
+  }) {
+    final jornada = Map<String, dynamic>.from(
+      jornadaHoy.value ?? _localJornada(inicio: true),
+    );
+    final visitas = visitasRegistradas.toList();
+
+    final index = visitas.indexWhere((visita) {
+      if (visitaId != null && _toInt(visita['vis_id']) == visitaId) {
+        return true;
+      }
+      if (visitaLocalUuid != null &&
+          visitaLocalUuid.isNotEmpty &&
+          (visita['local_uuid'] ?? '').toString() == visitaLocalUuid) {
+        return true;
+      }
+
+      final detalleId = _toInt(detalleRuta['ruta_det_id']);
+      final visitaDetalleId = _toInt(visita['ruta_det_id']);
+      if (detalleId != null && detalleId == visitaDetalleId) {
+        return true;
+      }
+
+      final cliente = _asMapOrNull(detalleRuta['cliente']) ?? detalleRuta;
+      final clienteId =
+          _toInt(cliente['cliente_id']) ?? _toInt(detalleRuta['cliente_id']);
+      final visitaClienteId = _toInt(visita['cliente_id']);
+      return clienteId != null && clienteId == visitaClienteId;
+    });
+
+    if (index < 0) return;
+
+    final current = Map<String, dynamic>.from(visitas[index]);
+    current.addAll({
+      'fecha_inicio': payload['fecha_inicio'],
+      'fecha_fin': payload['fecha_fin'],
+      'tipo_atencion': payload['tipo_atencion'],
+      'efectiva': payload['efectiva'],
+      'resultado': payload['resultado'],
+      'motivo': payload['motivo'],
+      'observaciones': payload['observaciones'],
+      'inicio_lat': payload['inicio_lat'],
+      'inicio_lng': payload['inicio_lng'],
+      'fin_lat': payload['fin_lat'],
+      'fin_lng': payload['fin_lng'],
+      'vis_lat': payload['lat'] ?? payload['fin_lat'],
+      'vis_lng': payload['lng'] ?? payload['fin_lng'],
+      'distancia_punto_m': payload['distancia_punto_m'],
+      'cumplimiento_ruta': payload['cumplimiento_ruta'],
+      'offline': true,
+    });
+
+    visitas[index] = current;
     jornada['visitas'] = visitas;
     jornadaHoy.value = jornada;
   }
@@ -1265,6 +1477,11 @@ class VisitadorOperativoController extends GetxController {
     if (value is num) return value != 0;
     final text = value?.toString().toLowerCase();
     return text == 'true' || text == '1';
+  }
+
+  String? _nullableString(dynamic value) {
+    final text = value?.toString().trim() ?? '';
+    return text.isEmpty ? null : text;
   }
 
   String _text(dynamic value, {required String fallback}) {

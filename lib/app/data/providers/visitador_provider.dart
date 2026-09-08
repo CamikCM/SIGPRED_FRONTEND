@@ -101,6 +101,18 @@ class VisitadorProvider {
     return _decodeMap(response, 'REGISTRAR_VISITA');
   }
 
+  Future<Map<String, dynamic>> actualizarVisita(
+    int visitaId,
+    Map<String, dynamic> payload,
+  ) async {
+    final response = await _client.put(
+      Env.uri('/visitas/$visitaId'),
+      headers: _headers,
+      body: jsonEncode(payload),
+    );
+    return _decodeMap(response, 'ACTUALIZAR_VISITA');
+  }
+
   Future<List<Map<String, dynamic>>> getHistorialVisitas({
     required String fecha,
     required int visitadorId,

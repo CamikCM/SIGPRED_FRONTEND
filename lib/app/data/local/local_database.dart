@@ -85,6 +85,52 @@ class LocalDatabase {
     });
   }
 
+  Future<bool> replacePendingVisitaPayload({
+    required String localUuid,
+    required Map<String, dynamic> payload,
+  }) async {
+    final db = await database;
+    final rows = await db.query(
+      'offline_records',
+      where: 'kind = ? AND method = ? AND status = ?',
+      whereArgs: ['visita', 'POST', 'pending'],
+      orderBy: 'created_at DESC',
+    );
+
+    for (final row in rows) {
+      final rawPayload = row['payload'];
+      if (rawPayload == null) continue;
+
+      try {
+        final decoded = jsonDecode(rawPayload.toString());
+        if (decoded is! Map) continue;
+        final current = Map<String, dynamic>.from(decoded);
+        if ((current['local_uuid'] ?? '').toString() != localUuid) continue;
+
+        final id = row['id'];
+        if (id == null) return false;
+
+        final now = DateTime.now().toIso8601String();
+        await db.update(
+          'offline_records',
+          {
+            'payload': jsonEncode(payload),
+            'attempts': 0,
+            'last_error': null,
+            'updated_at': now,
+          },
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+        return true;
+      } catch (_) {
+        continue;
+      }
+    }
+
+    return false;
+  }
+
   Future<List<Map<String, dynamic>>> pendingRecords({int limit = 100}) async {
     final db = await database;
     return db.query(

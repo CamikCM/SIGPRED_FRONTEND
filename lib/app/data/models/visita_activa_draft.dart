@@ -13,6 +13,9 @@ class VisitaActivaDraft {
     required this.pedidoItems,
     required this.updatedAt,
     this.inicioLat,
+    this.visitaId,
+    this.visitaLocalUuid,
+    this.esRevisita = false,
     this.inicioLng,
     this.fechaEntrega,
     this.firmaBase64,
@@ -26,6 +29,9 @@ class VisitaActivaDraft {
   final DateTime fechaInicio;
   final double? inicioLat;
   final double? inicioLng;
+  final int? visitaId;
+  final String? visitaLocalUuid;
+  final bool esRevisita;
   final String tipoAtencion;
   final bool efectiva;
   final String resultado;
@@ -54,6 +60,9 @@ class VisitaActivaDraft {
     DateTime? fechaInicio,
     double? inicioLat,
     double? inicioLng,
+    int? visitaId,
+    String? visitaLocalUuid,
+    bool? esRevisita,
     String? tipoAtencion,
     bool? efectiva,
     String? resultado,
@@ -75,6 +84,9 @@ class VisitaActivaDraft {
       fechaInicio: fechaInicio ?? this.fechaInicio,
       inicioLat: inicioLat ?? this.inicioLat,
       inicioLng: inicioLng ?? this.inicioLng,
+      visitaId: visitaId ?? this.visitaId,
+      visitaLocalUuid: visitaLocalUuid ?? this.visitaLocalUuid,
+      esRevisita: esRevisita ?? this.esRevisita,
       tipoAtencion: tipoAtencion ?? this.tipoAtencion,
       efectiva: efectiva ?? this.efectiva,
       resultado: resultado ?? this.resultado,
@@ -100,6 +112,10 @@ class VisitaActivaDraft {
     'fecha_inicio': fechaInicio.toIso8601String(),
     if (inicioLat != null) 'inicio_lat': inicioLat,
     if (inicioLng != null) 'inicio_lng': inicioLng,
+    if (visitaId != null) 'visita_id': visitaId,
+    if (visitaLocalUuid != null && visitaLocalUuid!.trim().isNotEmpty)
+      'visita_local_uuid': visitaLocalUuid,
+    'es_revisita': esRevisita,
     'tipo_atencion': tipoAtencion,
     'efectiva': efectiva,
     'resultado': resultado,
@@ -131,6 +147,9 @@ class VisitaActivaDraft {
           DateTime.now(),
       inicioLat: _toDouble(json['inicio_lat']),
       inicioLng: _toDouble(json['inicio_lng']),
+      visitaId: _toInt(json['visita_id']),
+      visitaLocalUuid: _nullableText(json['visita_local_uuid']),
+      esRevisita: _toBool(json['es_revisita'], fallback: false),
       tipoAtencion: (json['tipo_atencion'] ?? 'Presencial').toString(),
       efectiva: _toBool(json['efectiva'], fallback: true),
       resultado: (json['resultado'] ?? 'Visita realizada').toString(),

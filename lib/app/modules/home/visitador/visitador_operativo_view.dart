@@ -2048,6 +2048,9 @@ class _RoutePointCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final visitado = controller.detalleVisitado(detalle);
+    final revisitable = controller.detalleRevisitable(detalle);
+    final efectiva = controller.detalleVisitaEfectiva(detalle);
+    final motivo = controller.detalleMotivoVisita(detalle);
     final activa = controller.esDetalleVisitaActiva(detalle);
     final bloqueadaPorOtra = controller.tieneVisitaActiva && !activa;
     final dentroDelRadio = controller.detalleDentroDeRadio(detalle);
@@ -2070,7 +2073,9 @@ class _RoutePointCard extends StatelessWidget {
                 height: 48,
                 decoration: BoxDecoration(
                   color:
-                      (visitado
+                      (visitado && !efectiva
+                              ? SigmaColors.warning
+                              : visitado
                               ? SigmaColors.success
                               : activa
                               ? SigmaColors.secondary
@@ -2079,12 +2084,18 @@ class _RoutePointCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: Icon(
-                  visitado
+                  revisitable
+                      ? Icons.refresh_rounded
+                      : visitado && !efectiva
+                      ? Icons.remove_shopping_cart_outlined
+                      : visitado
                       ? Icons.check_rounded
                       : activa
                       ? Icons.navigation_rounded
                       : Icons.place_outlined,
-                  color: visitado
+                  color: visitado && !efectiva
+                      ? SigmaColors.warning
+                      : visitado
                       ? SigmaColors.success
                       : activa
                       ? SigmaColors.secondary
@@ -2122,7 +2133,7 @@ class _RoutePointCard extends StatelessWidget {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    if (!visitado) ...[
+                    if (!visitado || revisitable) ...[
                       const SizedBox(height: 8),
                       Row(
                         children: [
@@ -2139,19 +2150,33 @@ class _RoutePointCard extends StatelessWidget {
                         ],
                       ),
                     ],
+                    if (visitado && !efectiva && motivo.isNotEmpty) ...[
+                      const SizedBox(height: 7),
+                      Text(
+                        'Último resultado: $motivo',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: SigmaColors.warning,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
               if (visitado)
-                const SigmaPill(
-                  label: 'Realizada',
-                  icon: Icons.done,
-                  color: SigmaColors.success,
+                SigmaPill(
+                  label: efectiva ? 'Efectiva' : 'No efectiva',
+                  icon: revisitable
+                      ? Icons.refresh_rounded
+                      : efectiva
+                      ? Icons.done
+                      : Icons.remove_shopping_cart_outlined,
+                  color: efectiva ? SigmaColors.success : SigmaColors.warning,
                 ),
             ],
           ),
           const SizedBox(height: 12),
-          if (visitado)
+          if (visitado && !revisitable)
             const SizedBox.shrink()
           else if (!controller.jornadaActiva)
             const _VisitGuideMessage(
@@ -2162,6 +2187,34 @@ class _RoutePointCard extends StatelessWidget {
             const _VisitGuideMessage(
               icon: Icons.info_outline_rounded,
               text: 'Primero termina la visita que tienes en curso.',
+            )
+          else if (!activa && revisitable && !dentroDelRadio) ...[
+            _VisitGuideMessage(
+              icon: Icons.directions_walk_rounded,
+              text:
+                  'Esta visita quedó no efectiva. Acércate nuevamente al punto '
+                  'para poder volver a visitarla.',
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: controller.actualizarUbicacionOperativa,
+              icon: const Icon(Icons.my_location_rounded),
+              label: const Text('Comprobar mi ubicación'),
+            ),
+          ] else if (!activa && revisitable)
+            FilledButton.icon(
+              onPressed: controller.isSubmitting.value
+                  ? null
+                  : () => controller.iniciarORecuperarVisita(
+                      detalle,
+                      revisita: true,
+                    ),
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Volver a visitar'),
+              style: FilledButton.styleFrom(
+                backgroundColor: SigmaColors.warning,
+                foregroundColor: Colors.white,
+              ),
             )
           else if (!activa)
             FilledButton.icon(
