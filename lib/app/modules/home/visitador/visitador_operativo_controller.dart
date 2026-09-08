@@ -1190,8 +1190,7 @@ class VisitadorOperativoController extends GetxController {
       rutaId: rutaId,
     );
     isGpsTracking.value = true;
-    gpsStatusText.value =
-        'GPS en segundo plano activo cada ${BackgroundLocationService.trackingInterval.inSeconds}s';
+    gpsStatusText.value = BackgroundLocationService.trackingModeDescription;
   }
 
   Future<void> _stopGpsTracking() async {

@@ -95,3 +95,12 @@ __pycache__/
 /SIGPRED_DEBUG_HISTORIAL_SUPERVISOR.txt
 /SIGMA_OBJ5_AVANCE_*/
 /docs/sql.txt
+android/key.properties
+android/keystore/*.jks
+android/keystore/*.keystore
+
+# Releases generados localmente
+SIGPRED-Android-*.apk
+SIGPRED-Android-*.sha256
+sigpred_web_release.zip
+SIGPRED-iOS-SOURCE-*.zip

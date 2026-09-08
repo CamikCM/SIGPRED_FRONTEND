@@ -3,6 +3,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:get/get.dart';
 import '../data/models/user.dart';
 import 'background_location_service.dart';
+import 'package:flutter/foundation.dart';
 
 class AuthService extends GetxService {
   final _storage = const FlutterSecureStorage();
@@ -38,8 +39,10 @@ class AuthService extends GetxService {
   }
 
   Future<void> clearSession() async {
-    await BackgroundLocationService.stopTracking();
-    await BackgroundLocationService.clearTrackingContext();
+    if (!kIsWeb) {
+      await BackgroundLocationService.stopTracking();
+      await BackgroundLocationService.clearTrackingContext();
+    }
 
     currentUser.value = null;
     token.value = '';

@@ -37,27 +37,70 @@ class BackgroundLocationService {
   static const String _userKey = 'sigpred_tracking_user_id';
   static const String _startedAtKey = 'sigpred_tracking_started_at';
 
-  static bool get isSupported =>
+  // iOS usa Core Location directamente mediante Geolocator.
+  // Android conserva flutter_background_service.
+  static final StreamController<Map<String, dynamic>> _iosLocationController =
+      StreamController<Map<String, dynamic>>.broadcast();
+
+  static final StreamController<Map<String, dynamic>> _iosStatusController =
+      StreamController<Map<String, dynamic>>.broadcast();
+
+  static StreamSubscription<Position>? _iosPositionSubscription;
+  static int _iosPointCount = 0;
+  static bool _iosCaptureInProgress = false;
+
+  static bool get isAndroid =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
+  static bool get isIos =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
+  static bool get isSupported => isAndroid || isIos;
+
+  static String get trackingModeDescription {
+    if (isIos) {
+      return 'GPS en segundo plano activo en iPhone · '
+          'actualizaciones administradas por iOS';
+    }
+
+    return 'GPS en segundo plano activo cada '
+        '${trackingInterval.inSeconds}s';
+  }
+
   static Stream<Map<String, dynamic>> get locationUpdates {
-    if (!isSupported) return Stream<Map<String, dynamic>>.empty();
-    return _service
-        .on('locationUpdate')
-        .where((event) => event != null)
-        .map((event) => Map<String, dynamic>.from(event!));
+    if (isAndroid) {
+      return _service
+          .on('locationUpdate')
+          .where((event) => event != null)
+          .map((event) => Map<String, dynamic>.from(event!));
+    }
+
+    if (isIos) {
+      return _iosLocationController.stream;
+    }
+
+    return Stream<Map<String, dynamic>>.empty();
   }
 
   static Stream<Map<String, dynamic>> get statusUpdates {
-    if (!isSupported) return Stream<Map<String, dynamic>>.empty();
-    return _service
-        .on('trackingStatus')
-        .where((event) => event != null)
-        .map((event) => Map<String, dynamic>.from(event!));
+    if (isAndroid) {
+      return _service
+          .on('trackingStatus')
+          .where((event) => event != null)
+          .map((event) => Map<String, dynamic>.from(event!));
+    }
+
+    if (isIos) {
+      return _iosStatusController.stream;
+    }
+
+    return Stream<Map<String, dynamic>>.empty();
   }
 
   static Future<void> initializeService() async {
-    if (!isSupported) return;
+    // En iPhone el seguimiento se hace directamente mediante Core Location.
+    // flutter_background_service se conserva exclusivamente para Android.
+    if (!isAndroid) return;
 
     const channel = AndroidNotificationChannel(
       notificationChannelId,
@@ -68,10 +111,13 @@ class BackgroundLocationService {
     );
 
     final notifications = FlutterLocalNotificationsPlugin();
+
     const initializationSettings = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     );
+
     await notifications.initialize(initializationSettings);
+
     await notifications
         .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin
@@ -101,7 +147,8 @@ class BackgroundLocationService {
     if (!isSupported) {
       return const TrackingPermissionResult(
         allowed: false,
-        message: 'El seguimiento en segundo plano está disponible en Android.',
+        message:
+            'El seguimiento en segundo plano está disponible en Android y iPhone.',
       );
     }
 
@@ -112,33 +159,76 @@ class BackgroundLocationService {
       );
     }
 
-    final notificationStatus = await Permission.notification.status;
-    if (!notificationStatus.isGranted) {
-      await Permission.notification.request();
-    }
+    if (isAndroid) {
+      final notificationStatus = await Permission.notification.status;
 
-    var foregroundStatus = await Permission.locationWhenInUse.status;
-    if (!foregroundStatus.isGranted) {
-      foregroundStatus = await Permission.locationWhenInUse.request();
-    }
-    if (!foregroundStatus.isGranted) {
+      if (!notificationStatus.isGranted) {
+        await Permission.notification.request();
+      }
+
+      var foregroundStatus = await Permission.locationWhenInUse.status;
+
+      if (!foregroundStatus.isGranted) {
+        foregroundStatus = await Permission.locationWhenInUse.request();
+      }
+
+      if (!foregroundStatus.isGranted) {
+        return const TrackingPermissionResult(
+          allowed: false,
+          message:
+              'Debes permitir la ubicación precisa para registrar la jornada.',
+        );
+      }
+
+      var backgroundStatus = await Permission.locationAlways.status;
+
+      if (!backgroundStatus.isGranted) {
+        backgroundStatus = await Permission.locationAlways.request();
+      }
+
+      if (!backgroundStatus.isGranted) {
+        return const TrackingPermissionResult(
+          allowed: false,
+          message:
+              'Selecciona “Permitir siempre” en los ajustes para mantener '
+              'el GPS cuando la aplicación esté minimizada.',
+        );
+      }
+
       return const TrackingPermissionResult(
-        allowed: false,
-        message:
-            'Debes permitir la ubicación precisa para registrar la jornada.',
+        allowed: true,
+        message: 'Permisos de seguimiento concedidos.',
       );
     }
 
-    var backgroundStatus = await Permission.locationAlways.status;
-    if (!backgroundStatus.isGranted) {
-      backgroundStatus = await Permission.locationAlways.request();
+    // iPhone: Geolocator/Core Location.
+    var permission = await Geolocator.checkPermission();
+
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
     }
 
-    if (!backgroundStatus.isGranted) {
+    if (permission == LocationPermission.deniedForever) {
       return const TrackingPermissionResult(
         allowed: false,
         message:
-            'Selecciona “Permitir siempre” en los ajustes para mantener el GPS cuando la aplicación esté minimizada.',
+            'La ubicación está bloqueada para SIGPRED. '
+            'Abre Ajustes y habilita la ubicación.',
+      );
+    }
+
+    // iOS puede conceder primero "Al usar la app".
+    // Para seguimiento con la pantalla bloqueada/minimizada necesitamos Always.
+    if (permission == LocationPermission.whileInUse) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission != LocationPermission.always) {
+      return const TrackingPermissionResult(
+        allowed: false,
+        message:
+            'En iPhone selecciona “Siempre” para SIGPRED en '
+            'Ajustes > Privacidad y seguridad > Localización.',
       );
     }
 
@@ -149,7 +239,7 @@ class BackgroundLocationService {
   }
 
   static Future<void> openSettings() async {
-    await openAppSettings();
+    await Geolocator.openAppSettings();
   }
 
   static Future<void> startTracking({
@@ -160,24 +250,35 @@ class BackgroundLocationService {
     if (!isSupported) return;
 
     await _storage.write(key: _activeKey, value: 'true');
+
     await _storage.write(key: _userKey, value: userId.toString());
+
     await _storage.write(key: _jornadaKey, value: jornadaId?.toString() ?? '');
+
     await _storage.write(key: _rutaKey, value: rutaId?.toString() ?? '');
+
     await _storage.write(
       key: _startedAtKey,
       value: DateTime.now().toIso8601String(),
     );
 
-    final running = await _service.isRunning();
-    if (!running) {
-      await _service.startService();
-    } else {
-      _service.invoke('updateContext', {
-        'user_id': userId,
-        'jornada_id': jornadaId,
-        'ruta_id': rutaId,
-      });
+    if (isAndroid) {
+      final running = await _service.isRunning();
+
+      if (!running) {
+        await _service.startService();
+      } else {
+        _service.invoke('updateContext', {
+          'user_id': userId,
+          'jornada_id': jornadaId,
+          'ruta_id': rutaId,
+        });
+      }
+
+      return;
     }
+
+    await _startIosTracking();
   }
 
   static Future<void> restoreIfNeeded({
@@ -186,29 +287,261 @@ class BackgroundLocationService {
     int? rutaId,
   }) async {
     if (!isSupported) return;
+
     final active = await _storage.read(key: _activeKey);
+
     if (active == 'true') {
       await startTracking(userId: userId, jornadaId: jornadaId, rutaId: rutaId);
     }
   }
 
   static Future<bool> isRunning() async {
-    if (!isSupported) return false;
-    return _service.isRunning();
+    if (isAndroid) {
+      return _service.isRunning();
+    }
+
+    if (isIos) {
+      final active = await _storage.read(key: _activeKey);
+
+      return active == 'true' && _iosPositionSubscription != null;
+    }
+
+    return false;
   }
 
   static Future<void> stopTracking() async {
     if (!isSupported) return;
+
     await _storage.write(key: _activeKey, value: 'false');
-    _service.invoke('stopService');
+
+    if (isAndroid) {
+      _service.invoke('stopService');
+      return;
+    }
+
+    await _iosPositionSubscription?.cancel();
+    _iosPositionSubscription = null;
+
+    _emitIosStatus('stopped', 'Seguimiento GPS finalizado.');
   }
 
   static Future<void> clearTrackingContext() async {
+    if (isIos) {
+      await _iosPositionSubscription?.cancel();
+      _iosPositionSubscription = null;
+    }
+
     await _storage.delete(key: _activeKey);
     await _storage.delete(key: _jornadaKey);
     await _storage.delete(key: _rutaKey);
     await _storage.delete(key: _userKey);
     await _storage.delete(key: _startedAtKey);
+  }
+
+  static Future<void> _startIosTracking() async {
+    await _iosPositionSubscription?.cancel();
+    _iosPositionSubscription = null;
+
+    _iosPointCount = 0;
+    _iosCaptureInProgress = false;
+
+    final settings = AppleSettings(
+      accuracy: LocationAccuracy.bestForNavigation,
+      activityType: ActivityType.fitness,
+      distanceFilter: 5,
+      pauseLocationUpdatesAutomatically: false,
+      showBackgroundLocationIndicator: true,
+      allowBackgroundLocationUpdates: true,
+    );
+
+    _iosPositionSubscription =
+        Geolocator.getPositionStream(locationSettings: settings).listen(
+          (position) {
+            unawaited(
+              _captureIosPosition(position, source: 'jornada_tracking_ios'),
+            );
+          },
+          onError: (Object error) {
+            _emitIosStatus(
+              'temporary_error',
+              'Error de ubicación en iPhone: $error',
+            );
+          },
+          cancelOnError: false,
+        );
+
+    _emitIosStatus('started', 'GPS de jornada activo en iPhone.');
+  }
+
+  static Future<void> _captureIosPosition(
+    Position position, {
+    required String source,
+  }) async {
+    if (_iosCaptureInProgress) return;
+
+    _iosCaptureInProgress = true;
+
+    try {
+      final active = await _storage.read(key: _activeKey);
+
+      if (active != 'true') {
+        await _iosPositionSubscription?.cancel();
+        _iosPositionSubscription = null;
+        return;
+      }
+
+      final permission = await Geolocator.checkPermission();
+
+      if (permission != LocationPermission.always) {
+        _emitIosStatus(
+          'permission_error',
+          'SIGPRED necesita permiso “Siempre” para '
+              'continuar el seguimiento en iPhone.',
+        );
+        return;
+      }
+
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        _emitIosStatus(
+          'gps_disabled',
+          'La ubicación del iPhone está desactivada.',
+        );
+        return;
+      }
+
+      final jornadaText = await _storage.read(key: _jornadaKey);
+
+      final rutaText = await _storage.read(key: _rutaKey);
+
+      final token = await _storage.read(key: 'token');
+
+      final jornadaId = int.tryParse(jornadaText ?? '');
+
+      final rutaId = int.tryParse(rutaText ?? '');
+
+      final payload = <String, dynamic>{
+        if (jornadaId != null) 'jornada_id': jornadaId,
+        if (rutaId != null) 'ruta_id': rutaId,
+        'latitude': position.latitude,
+        'longitude': position.longitude,
+        'accuracy': position.accuracy,
+        'speed': position.speed,
+        'heading': position.heading,
+        'is_mocked': position.isMocked,
+        'source': source,
+        'captured_at': DateTime.now().toIso8601String(),
+      };
+
+      var queuedOffline = false;
+      String? networkError;
+
+      if (token == null || token.isEmpty) {
+        queuedOffline = true;
+        networkError = 'Sesión no disponible';
+      } else {
+        try {
+          final response = await http
+              .post(
+                Env.uri('/tracking/locations'),
+                headers: {
+                  'Authorization': 'Bearer $token',
+                  'Accept': 'application/json',
+                  'Content-Type': 'application/json',
+                },
+                body: jsonEncode(payload),
+              )
+              .timeout(const Duration(seconds: 10));
+
+          if (response.statusCode == 401 || response.statusCode == 403) {
+            await _storage.write(key: _activeKey, value: 'false');
+
+            _emitIosStatus(
+              'session_error',
+              'La sesión venció durante '
+                  'el seguimiento GPS.',
+            );
+
+            await _iosPositionSubscription?.cancel();
+            _iosPositionSubscription = null;
+            return;
+          }
+
+          if (response.statusCode >= 400 && response.statusCode < 500) {
+            _emitIosStatus(
+              'validation_error',
+              'El servidor rechazó el punto GPS '
+                  '(HTTP ${response.statusCode}).',
+            );
+            return;
+          }
+
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            throw Exception(
+              'HTTP ${response.statusCode}: '
+              '${response.body}',
+            );
+          }
+        } catch (error) {
+          queuedOffline = true;
+          networkError = error.toString();
+        }
+      }
+
+      if (queuedOffline) {
+        await LocalDatabase.instance.insertOfflineRecord(
+          kind: 'tracking',
+          method: 'POST',
+          endpoint: '/tracking/locations',
+          payload: payload,
+        );
+      }
+
+      _iosPointCount += 1;
+
+      final stateText = queuedOffline ? 'guardado offline' : 'enviado';
+
+      debugPrint(
+        '📍 iOS GPS #$_iosPointCount $stateText · '
+        '${position.latitude.toStringAsFixed(6)}, '
+        '${position.longitude.toStringAsFixed(6)}',
+      );
+
+      _iosLocationController.add({
+        ...payload,
+        'queued_offline': queuedOffline,
+        'point_count': _iosPointCount,
+        if (networkError != null) 'network_error': networkError,
+      });
+
+      _emitIosStatus(
+        'tracking',
+        'GPS activo · $_iosPointCount '
+            '${_iosPointCount == 1 ? 'punto' : 'puntos'} · '
+            'último $stateText',
+      );
+    } catch (error, stackTrace) {
+      debugPrint('❌ Error de tracking GPS iOS: $error');
+
+      debugPrintStack(stackTrace: stackTrace);
+
+      _emitIosStatus(
+        'temporary_error',
+        'Error temporal de GPS. '
+            'SIGPRED continuará intentando.',
+      );
+    } finally {
+      _iosCaptureInProgress = false;
+    }
+  }
+
+  static void _emitIosStatus(String status, String message) {
+    if (!isIos) return;
+
+    _iosStatusController.add({
+      'status': status,
+      'message': message,
+      'captured_at': DateTime.now().toIso8601String(),
+    });
   }
 }
 

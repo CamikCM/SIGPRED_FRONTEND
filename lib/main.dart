@@ -44,7 +44,7 @@ class MyApp extends StatelessWidget {
           ? Routes.roleHome
           : Routes.login,
       getPages: AppPages.pages,
-      themeMode: ThemeMode.system,
+      themeMode: kIsWeb ? ThemeMode.light : ThemeMode.system,
       theme: _theme(Brightness.light),
       darkTheme: _theme(Brightness.dark),
     );

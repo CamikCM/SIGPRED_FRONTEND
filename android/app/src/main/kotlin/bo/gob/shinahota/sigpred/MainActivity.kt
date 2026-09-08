@@ -1,4 +1,4 @@
-package com.example.tracking_andercode_v2
+package bo.gob.shinahota.sigpred
 
 import io.flutter.embedding.android.FlutterActivity
 
