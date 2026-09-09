@@ -7,6 +7,7 @@ import 'historial_visitador_controller.dart';
 import 'historial_visitador_view.dart';
 import 'mapa_ruta_visitador_view.dart';
 import 'visitador_mas_view.dart';
+import 'visitador_operativo_controller.dart';
 import 'visitador_operativo_view.dart';
 
 class VisitadorHomeView extends StatefulWidget {
@@ -20,8 +21,23 @@ class _VisitadorHomeViewState extends State<VisitadorHomeView> {
   int currentIndex = 0;
   int _pageRevision = 0;
 
+  void _refreshInicio() {
+    if (!Get.isRegistered<VisitadorOperativoController>()) {
+      return;
+    }
+
+    Future.microtask(
+      () => Get.find<VisitadorOperativoController>().refreshAll(),
+    );
+  }
+
   void _selectDestination(int index) {
-    if (index == currentIndex) return;
+    if (index == currentIndex) {
+      if (index == 0) {
+        _refreshInicio();
+      }
+      return;
+    }
 
     debugPrint('🧭 Visitador navegación: $currentIndex -> $index');
 
@@ -29,6 +45,10 @@ class _VisitadorHomeViewState extends State<VisitadorHomeView> {
       currentIndex = index;
       _pageRevision++;
     });
+
+    if (index == 0) {
+      _refreshInicio();
+    }
 
     if (index == 2 && Get.isRegistered<HistorialVisitadorController>()) {
       Future.microtask(

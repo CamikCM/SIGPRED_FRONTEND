@@ -119,10 +119,9 @@ class _WebLeafletMapState extends State<WebLeafletMap> {
     const points = $pointsJson;
     const map = L.map('map', { zoomControl: true }).setView([$centerLat, $centerLng], points.length <= 1 ? 15 : 13);
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      maxZoom: 20,
-      subdomains: 'abcd',
-      attribution: '&copy; OpenStreetMap &copy; CARTO'
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
     const markerGroup = L.featureGroup().addTo(map);

@@ -9,7 +9,6 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
 import '../../../utils/app_theme.dart';
-import '../../../utils/safe_ui.dart';
 import 'visitador_operativo_controller.dart';
 
 import 'package:flutter/foundation.dart';
@@ -1071,6 +1070,7 @@ class _MapBottomSheet extends StatelessWidget {
                           routeStatus: routeStatus,
                           distanceKm: distanceKm,
                           durationMin: durationMin,
+                          onPointTap: onPointTap,
                         )
                       : _SelectedSummary(
                           controller: controller,
@@ -1158,6 +1158,7 @@ class _RecommendationSummary extends StatelessWidget {
     required this.routeStatus,
     required this.distanceKm,
     required this.durationMin,
+    required this.onPointTap,
   });
 
   final VisitadorOperativoController controller;
@@ -1165,6 +1166,7 @@ class _RecommendationSummary extends StatelessWidget {
   final String routeStatus;
   final double? distanceKm;
   final double? durationMin;
+  final Future<void> Function(_MapPoint point) onPointTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1176,7 +1178,7 @@ class _RecommendationSummary extends StatelessWidget {
       }
     }
 
-    return Row(
+    final content = Row(
       children: [
         Container(
           width: 44,
@@ -1207,7 +1209,7 @@ class _RecommendationSummary extends StatelessWidget {
               Text(
                 recommended == null
                     ? 'Toca un punto en el mapa.'
-                    : '${controller.distanciaDetalleLabel(recommended.detail)} · toca cualquier punto si prefieres otro',
+                    : '${controller.distanciaDetalleLabel(recommended.detail)} · toca aquí para ver la ruta y acciones',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -1219,7 +1221,30 @@ class _RecommendationSummary extends StatelessWidget {
         ),
         if (distanceKm != null)
           _RoutePill(text: '${distanceKm!.toStringAsFixed(1)} km'),
+        if (recommended != null) ...[
+          const SizedBox(width: 6),
+          const Icon(Icons.chevron_right_rounded, color: SigmaColors.primary),
+        ],
       ],
+    );
+
+    if (recommended == null) {
+      return content;
+    }
+
+    final point = recommended;
+
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => onPointTap(point),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+          child: content,
+        ),
+      ),
     );
   }
 }

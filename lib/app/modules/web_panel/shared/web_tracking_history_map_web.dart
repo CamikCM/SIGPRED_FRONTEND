@@ -264,8 +264,9 @@ const visitadorName = $nameJson;
 const liveMode = $liveModeJson;
 const focusTarget = $focusTargetJson;
 const map = L.map('map').setView([$centerLat, $centerLng], liveMode ? 16.5 : 14);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-  maxZoom:20, subdomains:'abcd', attribution:'&copy; OpenStreetMap &copy; CARTO'
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; OpenStreetMap contributors'
 }).addTo(map);
 const routeGroup = L.featureGroup().addTo(map);
 const visitGroup = L.featureGroup().addTo(map);
