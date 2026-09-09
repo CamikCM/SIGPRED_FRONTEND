@@ -33,6 +33,7 @@ class _WebTrackingViewState extends State<WebTrackingView> {
   int? _selectedUserId;
   DateTime _selectedDate = DateTime.now();
   late Future<_TrackingData> _future;
+  Future<List<Map<String, dynamic>>>? _trackableUsersFuture;
   bool _liveMode = false;
   bool _liveRefreshInFlight = false;
   // SIGPRED 10.23.3 R2 · tracking remoto visual fluido Web
@@ -61,8 +62,11 @@ class _WebTrackingViewState extends State<WebTrackingView> {
   }
 
   Future<_TrackingData> _loadData() async {
+    final trackableUsersFuture = _trackableUsersFuture ??= _provider
+        .getTrackableUsers();
+
     final results = await Future.wait<dynamic>([
-      _provider.getTrackableUsers(),
+      trackableUsersFuture,
       _provider.getLastLocations(),
     ]);
 
@@ -114,6 +118,7 @@ class _WebTrackingViewState extends State<WebTrackingView> {
   }
 
   Future<void> _refresh() async {
+    _trackableUsersFuture = null;
     final next = _loadData();
     setState(() {
       _future = next;

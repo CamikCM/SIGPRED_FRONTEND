@@ -53,8 +53,8 @@ class HistoryTabController extends GetxController {
 
   final mapStyles = {
     'Claro': 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    'Gris': 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-    'Oscuro': 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    'Gris': 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    'Oscuro': 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
     'Satélite':
         'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
   };

@@ -2980,6 +2980,7 @@ class _ErrorCard extends StatelessWidget {
           ),
           const SizedBox(width: 14),
           FilledButton.icon(
+            style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
             onPressed: onRetry,
             icon: const Icon(Icons.refresh_rounded),
             label: const Text('Reintentar'),

@@ -824,8 +824,8 @@ class _MapaRutaVisitadorViewState extends State<MapaRutaVisitadorView> {
                         markers: [
                           Marker(
                             point: position,
-                            width: 56,
-                            height: 56,
+                            width: 46,
+                            height: 46,
                             child: ValueListenableBuilder<double>(
                               valueListenable: _visualHeading,
                               builder: (context, heading, child) {
@@ -837,7 +837,7 @@ class _MapaRutaVisitadorViewState extends State<MapaRutaVisitadorView> {
                                       shape: BoxShape.circle,
                                       border: Border.all(
                                         color: Colors.white,
-                                        width: 4,
+                                        width: 3,
                                       ),
                                       boxShadow: [
                                         BoxShadow(
@@ -850,7 +850,7 @@ class _MapaRutaVisitadorViewState extends State<MapaRutaVisitadorView> {
                                     child: const Icon(
                                       Icons.navigation_rounded,
                                       color: Colors.white,
-                                      size: 27,
+                                      size: 23,
                                     ),
                                   ),
                                 );
